@@ -1,0 +1,11 @@
+Pathway,P.Value,FDR,Total,Expected,Hits
+Chemokine signaling pathway,2.81E-07,8.93E-05,190,2.23,13
+Lysosome,1.27E-05,0.00201,123,1.45,9
+Phagosome,0.000395,0.0419,152,1.79,8
+Cytokine-cytokine receptor interaction,0.000623,0.0495,294,3.46,11
+IL-17 signaling pathway,0.00464,0.148,93,1.09,5
+HIF-1 signaling pathway,0.00631,0.167,100,1.18,5
+Toll-like receptor signaling pathway,0.00743,0.182,104,1.22,5
+Ferroptosis,0.0114,0.258,40,0.47,3
+Antigen processing and presentation,0.0126,0.258,77,0.906,4
+Cell adhesion molecules (CAMs),0.0285,0.377,146,1.72,5
