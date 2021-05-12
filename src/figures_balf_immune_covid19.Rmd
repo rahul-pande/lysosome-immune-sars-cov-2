@@ -1,0 +1,281 @@
+---
+title: "d409 Integration"
+# output: html_notebook
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+require("knitr")
+opts_knit$set(root.dir = "../")
+# knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.retina = T)
+
+knitr::knit_hooks$set(timeit = local({
+  now = NULL
+  function(before, options) {
+    if (before) {
+      now <<- Sys.time()
+    } else {
+      res = difftime(Sys.time(), now)
+      now <<- NULL
+      # use options$label if you want the chunk label as well
+      paste('Time for this code chunk:', as.character(res))
+    }
+  }})
+)
+```
+
+```{r message=F, echo=F}
+library(dplyr)
+library(Seurat)
+library(SeuratDisk)
+library(patchwork)
+library(stringr)
+library(magrittr)
+library(tidyr)
+library(gplots)
+library(purrr)
+library(cowplot)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(lattice)
+library(EnhancedVolcano)
+require(biomaRt)
+require(ComplexHeatmap)
+
+library(ggpubr)
+```
+
+```{r}
+ensembl = useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl", mart=ensembl)
+```
+
+```{r timeit=T}
+covid.data <- readRDS("./data/reprocessed_covid_data.rds")
+DefaultAssay(covid.data) <- "RNA"
+covid.data <- ScaleData(covid.data)
+```
+
+```{r}
+DimPlot(covid.data, group.by = "cell_type",
+        reduction = "tsne", split.by = "stim",
+        label = T, pt.size = 0.5) +
+  NoLegend() +
+  theme(axis.line = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+```{r}
+DimPlot(covid.data, group.by = "seurat_clusters",
+        reduction = "tsne",
+        label = T, pt.size = 0.5) +
+  NoLegend() +
+  theme(axis.line = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+```{r}
+VlnPlot(covid.data, features = c("CD68", "FCGR3B", "CD1C", "LILRA4", "TPSB2",
+                                  "CD3D", "KLRD1", "MS4A1", "IGHG4",
+                                 "TPPP3", "KRT18"),
+        assay = "RNA", group.by = "seurat_clusters",
+        stack = T, flip = T) + NoLegend()
+```
+
+```{r}
+DimPlot(covid.data, group.by = "cell_type",
+        split.by = "stim", reduction = "tsne") +
+  theme(axis.line = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+```{r}
+# cholesterol_biosynthesis_genes <- getBM(
+#   attributes= c("hgnc_symbol"),
+#   filters="go",
+#   values=c("GO:0008203"),
+#   mart=ensembl,
+#   useCache = FALSE)$"hgnc_symbol"
+
+cholesterol_biosynthesis_genes <- c("CYP27A1", "LRPAP1", "NCEH1",
+                                    "LRP1", "SORT1", "APOC2", "APOC1",
+                                    "TSPO", "LPL", "APOE", "LIPA")
+
+DotPlot(covid.data, assay = "RNA",
+        features = cholesterol_biosynthesis_genes,
+        group.by = "stim",
+        scale = F) +
+  coord_flip() +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank()
+        )
+```
+
+
+```{r}
+
+genes_of_interest <- c("GBA", "SCARB2", "CSF1R")
+
+Idents(covid.data) <- "stim"
+VlnPlot(covid.data,
+        assay = "RNA",
+        cols = c(HC = "#177BC4", M = "#FF6600", S = "#FF0000"),
+        features = genes_of_interest,
+        group.by = "stim",
+        stack = T, pt.size = 0.1, fill.by = "ident",
+        flip = T) + NoLegend()
+```
+
+
+```{r}
+module_colors <- c("brown", "green", "pink")
+
+modules <- lapply(module_colors, function(color){
+  module_genes <- scan(
+    paste0("./data/wgcna/reprocessed/module_", color, ".txt", collapse = ""),
+    character(),
+    quote = ""
+    )
+  return(module_genes)
+})
+names(modules) <- module_colors
+
+module_gene_df <- data.frame(unlist(modules), stringsAsFactors = F)
+colnames(module_gene_df) <- "gene"
+module_gene_df$module <- str_extract(row.names(module_gene_df), "[a-zA-Z&]+")
+row.names(module_gene_df) <- module_gene_df$gene
+```
+
+Pheatmap
+```{r}
+heatmap_genes <- subset(module_gene_df, gene %in% row.names(covid.data@assays$RNA@scale.data))
+hmap_matrix <- as.matrix(
+  covid.data@assays$RNA@data[
+    heatmap_genes$gene [
+      which(heatmap_genes$gene %in% row.names(covid.data@assays$RNA@scale.data)) 
+      ],
+    ]
+)
+
+color_map = list(
+    module = c(brown = "#A52A2A", green = "#00FF00", pink = "#FFC0CB"),
+    
+    stim = c(HC = "#177BC4", M = "#FF6600", S = "#FF0000"),
+    
+    cell_type = c("Macrophage" = "#A3A500",
+                  "NK&T" = "#00B0F6",
+                  "B" = "#E76BF3",
+                  "Epithelial" = "#F8766D",
+                  "Neutrophil" = "#00BF7D")
+)
+
+col_anno <- subset(covid.data@meta.data, select = c("stim", "cell_type"))
+col_anno <- col_anno %>% arrange(stim, cell_type)
+row_anno <- subset(heatmap_genes, select = c("module"))
+  
+pheatmap::pheatmap(hmap_matrix[,row.names(col_anno)],
+                   annotation_col = col_anno,
+                   annotation_row = row_anno,
+                   annotation_colors = color_map,
+                   cluster_rows = F,
+                   color = colorRampPalette(c("white", "orange", "red", "red2"))(30),
+                   cluster_cols = F,
+                   show_colnames = F, legend = T,
+                   width = 8,
+                   height = 5,
+                   show_rownames = F,
+                   filename = "plot.png")
+```
+
+
+```{r}
+comparison_genes <- c("ARL8B", "RAB7A", "HSPA5")
+
+comparison_data <- as.data.frame(
+  t(
+    as.matrix(covid.data[["RNA"]]@data[comparison_genes,])
+    )
+  )
+
+all_comparison_data <- comparison_data %>%
+  tibble::rownames_to_column("id") %>%
+  left_join(
+    covid.data@meta.data %>%
+      dplyr::select(stim) %>%
+      tibble::rownames_to_column("id"),
+    by = "id") %>%
+  tibble::column_to_rownames("id")
+
+melted_comparison_data <- reshape2::melt(all_comparison_data,
+                              id.vars = "stim",
+                              value.name = "expression",
+                              variable.name = "gene")
+```
+
+```{r}
+ggviolin(melted_comparison_data,
+       x = "stim",
+       y = "expression",
+       color = "stim",
+       # palette = "jco",
+       palette = c(HC = "#177BC4", M = "#FF6600", S = "#FF0000"),
+       add = c("boxplot"),
+       # notch = F,
+       facet.by = "gene",
+       outlier.shape = NA,
+       bxp.errorbar = T,
+       short.panel.labs = TRUE) +
+  stat_compare_means(comparisons = combn(unique(covid.data$stim), 2, simplify = F),
+                     method = "wilcox.test",
+                     label = "p.signif",
+                     label.y = c(6.2, 7.2, 6.7) ) +
+  stat_compare_means() +
+  NoLegend()
+```
+
+```{r}
+cut_melted_comparison_data <- melted_comparison_data %>%
+  group_by(gene) %>%
+  mutate(c1 = median(expression[expression > 0]) + mad(expression[expression > 0]),
+         c2 = median(expression[expression > 0]) + 2 * mad(expression[expression > 0])
+         ) %>%
+  mutate(expr_group = ifelse(expression <= c1, "N",
+                             ifelse(expression > c2, "H", "VH")
+                             ))
+
+cut_melted_comparison_data$expr_group <- factor(
+  cut_melted_comparison_data$expr_group,
+  levels = c("N", "H", "VH")
+  )
+
+cut_melted_comparison_data$expr_group <- factor(
+  cut_melted_comparison_data$expr_group,
+  levels = c("VH", "H", "N")
+  )
+
+```
+
+```{r}
+
+vcd::mosaic( ~ gene + stim + expr_group,
+            direction = c("v", "v", "h"),
+            data = cut_melted_comparison_data,
+            labeling_args = list(set_varnames = c(
+              gene="Gene",
+              stim="Condition",
+              expr_group="Expression")),
+            levels = c("N", "H", "VH"),
+            gp = shading_hsv,
+            gp_args = list(interpolate = seq(1,30, by = 4)),
+            set_labels = list(
+              expr_group = c("VH", "H", "N"),
+              stim = c("HC", "M", "S")),
+            shade = TRUE)
+```

@@ -1,0 +1,202 @@
+---
+title: "balf Integration"
+# output: html_notebook
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+require("knitr")
+opts_knit$set(root.dir = "../")
+# knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.retina = T)
+
+knitr::knit_hooks$set(timeit = local({
+  now = NULL
+  function(before, options) {
+    if (before) {
+      now <<- Sys.time()
+    } else {
+      res = difftime(Sys.time(), now)
+      now <<- NULL
+      # use options$label if you want the chunk label as well
+      paste('Time for this code chunk:', as.character(res))
+    }
+  }})
+)
+```
+
+```{r message=F, echo=F}
+library(dplyr)
+library(future)
+library(Seurat)
+library(SeuratDisk)
+library(patchwork)
+library(stringr)
+library(magrittr)
+library(tidyr)
+library(gplots)
+library(purrr)
+library(cowplot)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(lattice)
+library(EnhancedVolcano)
+require(biomaRt)
+require(ComplexHeatmap)
+```
+
+```{r}
+# plan("multiprocess", workers = 4)
+```
+
+```{r}
+all.balf.data <- readRDS("./data/integrated_12samples_covid19_patients.rds")
+```
+
+
+```{r}
+all.balf.data[["percent.MT"]] <- NULL
+all.balf.data[["integrated"]] <- NULL
+all.balf.data[["percent.mt"]] <- PercentageFeatureSet(all.balf.data, pattern = "^MT-")
+DefaultAssay(all.balf.data) <- "RNA"
+```
+
+
+```{r}
+VlnPlot(all.balf.data,
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+        pt.size = 0.001, group.by = "stim") +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank())
+```
+
+```{r}
+all.balf.data <- subset(all.balf.data,
+                        subset = nFeature_RNA > 200 &
+                        nFeature_RNA < 6500 &
+                        percent.mt < 10.0)
+```
+
+```{r}
+VlnPlot(all.balf.data,
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+        pt.size = 0.00, group.by = "stim") +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank())
+```
+
+```{r}
+DefaultAssay(all.balf.data) <- "RNA"
+balf.list <- SplitObject(all.balf.data, split.by = "stim")
+
+rm(all.balf.data)
+gc()
+  
+normAndVarFeatures <- function(seuratObj){
+  DefaultAssay(seuratObj) <- "RNA"
+  seuratObj <- NormalizeData(seuratObj, verbose=FALSE)
+  seuratObj <- FindVariableFeatures(seuratObj, selection.method="vst",
+                                    nfeatures = 2000, verbose=TRUE)
+  return(seuratObj)
+}
+
+balf.list <- lapply(balf.list, normAndVarFeatures)
+
+k.filter <- min(200, min(sapply(balf.list, ncol)))
+
+integration.anchors <- FindIntegrationAnchors(
+  object.list = balf.list,
+  anchor.features = 1000,
+  k.filter = k.filter
+)
+
+integrated.data <- IntegrateData(anchorset = integration.anchors)
+```
+
+```{r}
+DefaultAssay(integrated.data) <- "integrated"
+integrated.data <- ScaleData(integrated.data, vars.to.regress = c("percent.mt"))
+```
+
+```{r}
+integrated.data <- RunPCA(integrated.data, npcs = 100,
+                          nfeatures.print = 10, verbose=TRUE)
+```
+
+
+```{r}
+ElbowPlot(integrated.data, ndims = 100)
+```
+
+```{r}
+integrated.data <- RunUMAP(integrated.data, dims = 1:10)
+integrated.data <- RunTSNE(integrated.data, dims = 1:10)
+```
+
+```{r echo=FALSE}
+# Clustering and visualization(using tSNE and UMAP); resolution can vary
+integrated.data <- FindNeighbors(integrated.data, dims = 1:10, reduction = "pca")
+```
+
+```{r}
+integrated.data <- FindClusters(integrated.data, resolution = 0.6, n.start = 3)
+```
+
+```{r}
+DimPlot(integrated.data, reduction = "umap", group.by = "seurat_clusters",
+        label = T, pt.size = 0.5)
+DimPlot(integrated.data, reduction = "tsne", group.by = "seurat_clusters",
+        label = T, pt.size = 0.5)
+```
+
+```{r}
+VlnPlot(integrated.data, features = c("CD68", "FCGR3B",
+                                      # "CD1C", "LILRA4", "TPSB2",
+                                      "KLRD1", "CD3D", "MS4A1",
+                                      "IGHG4", "TPPP3", "KRT18"),
+        assay = "RNA", group.by = "seurat_clusters",
+        stack = T, flip = T) + NoLegend()
+```
+
+```{r}
+Idents(integrated.data) <- "seurat_clusters"
+
+cluster.cell.types <- list(
+  "Epithelial" = c(12, 15),
+  "Macrophage" = c(0, 1, 2, 3, 4, 5, 9, 10, 13),
+  "Neutrophil" = c(8),
+  "NK&T" = c(6, 7, 11),
+  "B" = c(14, 16, 17)
+)
+
+
+cluster.cell.types <- unlist(cluster.cell.types)
+names(cluster.cell.types) <- str_extract(names(cluster.cell.types), "[a-zA-Z&]+")
+
+renaming.idents <- names(cluster.cell.types)
+names(renaming.idents) <- as.vector(cluster.cell.types)
+
+integrated.data <- RenameIdents(integrated.data, renaming.idents)
+integrated.data$cell_type <- Idents(integrated.data)
+```
+
+```{r}
+DimPlot(integrated.data, group.by = "seurat_clusters"
+        , reduction = "tsne", label = T) +
+    theme(axis.line = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) + NoLegend()
+```
+
+```{r}
+DimPlot(integrated.data, group.by = "cell_type",
+        split.by = "stim", reduction = "tsne") +
+    theme(axis.line = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+```{r}
+saveRDS(integrated.data, "./data/reprocessed_covid_data.rds")
+```

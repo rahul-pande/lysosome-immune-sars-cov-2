@@ -1,0 +1,359 @@
+---
+title: "Neurons WGCNA"
+output:
+  pdf_document: default
+  # html_notebook: default
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+require("knitr")
+opts_knit$set(root.dir = "../")
+```
+
+```{r echo=FALSE, message=FALSE}
+library(Seurat)
+library(WGCNA)
+library(gprofiler2)
+library(caret)
+library(hash)
+# library(magrittr)
+library(dplyr)
+# library(tidyr)
+# library(stringi)
+library(gplots)
+library(flashClust)
+# library(ape)
+
+set.seed(12345)
+```
+
+
+```{r warning=FALSE}
+covid.data <- readRDS("./data/reprocessed_covid_data.rds")
+```
+
+
+```{r}
+cell_group <- covid.data$stim
+
+data_expr <- covid.data[["RNA"]]@data
+
+gene_list <- read.csv("./data/gene_pc_list_human_noXY.txt")
+data_expr <- data_expr[row.names(data_expr) %in% gene_list$Gene.name, ]
+```
+
+
+```{r}
+data_expr <- as.matrix(data_expr)
+data_expr <- t(data_expr)
+
+# rm(data_celltypes)
+
+gsg = goodSamplesGenes(data_expr, verbose = 3)
+gsg$allOK
+
+data_expr <- data_expr[, gsg$goodGenes]
+
+consideredGenes <- colnames(data_expr)
+
+
+dim(data_expr)
+gc()
+```
+
+```{r}
+collectGarbage()
+
+allowWGCNAThreads()
+
+powers = c(c(1:10), seq(from = 12, to=16, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(
+    data_expr
+  , powerVector = powers
+  , verbose = 6
+  , networkType = "unsigned"
+  # , blockSize = 1500
+)
+```
+
+
+```{r}
+# Plot the results:
+# Scale-free topology fit index as a function of the soft-thresholding power
+{
+  plot(
+    sft$fitIndices$Power
+    , -sign(sft$fitIndices$slope)*sft$fitIndices$SFT.R.sq
+    , xlab="Soft Threshold (power)"
+    , ylab="Scale Free Topology Model Fit,signed R^2"
+    , type="n"
+    , main = paste("Scale independence")
+  )
+  text(
+    sft$fitIndices$Power
+    , -sign(sft$fitIndices$slope)*sft$fitIndices$SFT.R.sq
+    , labels=powers
+    , cex=0.9
+    , col="red"
+  )
+  # this line corresponds to using an R^2 cut-off of h
+  abline(h=0.90,col="red")
+}
+```
+```{r}
+# Mean connectivity as a function of the soft-thresholding power
+{
+  sftPower <- tail(sft$fitIndices$Power, -1)
+  sftMeanK <- tail(sft$fitIndices$mean.k., -1)
+  plot(
+    sftPower
+    , sftMeanK
+    , xlab="Soft Threshold (power)"
+    , ylab="Mean Connectivity"
+    , type="n"
+    , main = paste("Mean connectivity")
+  )
+  text(
+    sftPower
+    , sftMeanK
+    , labels=sftPower
+    , cex=0.9
+    , col="red"
+  )
+}
+```
+
+```{r}
+adj <- adjacency(data_expr, power = 6, type = "unsigned")
+TOM <- TOMsimilarity(adj);
+
+row.names(TOM) = colnames(TOM) = consideredGenes
+
+dissTOM <- 1-TOM
+```
+
+```{r}
+collectGarbage()
+geneTree = flashClust(as.dist(dissTOM), method = "average");
+
+plot(
+   geneTree
+  , xlab=""
+  , sub=""
+  , main = "Gene clustering on TOM-based dissimilarity"
+  , labels = FALSE
+  , hang = 0.04
+);
+
+```
+
+```{r}
+dynamicMods = cutreeDynamic(
+    dendro = geneTree
+  , distM = dissTOM
+  , deepSplit = 2
+  , method = "hybrid"
+  , pamStage = TRUE
+  , pamRespectsDendro = FALSE
+);
+table(dynamicMods)
+```
+
+```{r}
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+```
+
+
+```{r}
+plotDendroAndColors(
+    geneTree
+  , dynamicColors
+  , "Dynamic Tree Cut"
+  , dendroLabels = FALSE
+  , hang = 0.03
+  , addGuide = TRUE
+  , guideHang = 0.05
+  , main = "Gene dendrogram and module colors"
+)
+```
+
+```{r}
+filteredGenesFlag <- dynamicColors != "grey"
+filteredTOM <- TOMsimilarityFromExpr(data_expr[, filteredGenesFlag], power = 6)
+row.names(filteredTOM) = colnames(filteredTOM) = consideredGenes[filteredGenesFlag]
+filteredDissTOM <- 1 - filteredTOM
+```
+
+```{r}
+collectGarbage()
+filtGeneTree <- flashClust(as.dist(filteredDissTOM), method = "average");
+
+plotDendroAndColors(
+    filtGeneTree
+  , dynamicColors[filteredGenesFlag]
+  , "Dynamic Tree Cut"
+  , dendroLabels = FALSE
+  , hang = 0.03
+  , addGuide = TRUE
+  , guideHang = 0.05
+  , main = "BALF Cells Module Dendrogram and Module Colors"
+  , cex.dendroLabels = 0.003
+  # , cex.colorLabels = 0.3
+)
+```
+
+```{r}
+diag(filteredDissTOM) = NA;
+sizeGrWindow(7,7)
+TOMplot(
+    filteredDissTOM ^ 8
+  , filtGeneTree
+  , as.character(dynamicColors[filteredGenesFlag])
+)
+```
+
+
+```{r}
+# module_colors= setdiff(unique(dynamicColors), "grey")
+# all_modules <- list()
+# for (color in module_colors){
+#     module=consideredGenes[which(dynamicColors==color)]
+#     write.table(
+#         module
+#       , file = paste(c("./data/wgcna/reprocessed/module_", color, ".txt"), collapse = "")
+#       , quote = F
+#       , row.names = F
+#       , col.names = F
+#     )
+#     all_modules[[color]] <- module
+# }
+```
+
+
+```{r}
+MEList <- moduleEigengenes(
+    data_expr[,dynamicColors != "grey"]
+  , colors = dynamicColors[dynamicColors != "grey"]
+)
+
+MEs <- MEList$eigengenes
+plotEigengeneNetworks(MEs, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2))
+
+individualGeneKME <- signedKME(
+    data_expr[,dynamicColors != "grey"]
+  , MEs
+  , outputColumnName = "kME"
+)
+```
+
+
+```{r}
+stim_df <- data.frame(stim = as.factor(cell_group))
+dmy <- dummyVars(" ~ . ", data = stim_df)
+traits_df <-data.frame(predict(dmy, newdata = stim_df))
+
+nGenes = ncol(data_expr);
+nSamples = nrow(data_expr);
+
+MEs = orderMEs(MEs)
+
+moduleTraitCor = cor(MEs, traits_df, use = "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+```
+
+```{r}
+textMatrix = paste(signif(moduleTraitCor, digits = 2), " (", format(moduleTraitPvalue, digits = 3), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+
+{par(mar = c(4.5, 15, 2, 2));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = sapply(strsplit(names(traits_df), ".", fixed = T), function(x){return(x[2])}),
+               yLabelsPosition = "left", cex.lab.x = 1.4, cex.lab.y = 1.4,
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = T, xLabelsAngle = 0,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = F,
+               cex.text = 1.4,
+               zlim = c(-1,1),
+               main = paste(""))
+}
+
+```
+
+```{r}
+spearman.cor <- lapply(MEs, function(x){
+  htest <- cor.test(x,
+           recode(cell_group, `HC` = 0, `M` = 1, `S` = 2),
+           method = "spearman", exact = F)
+  return(list("rho" = htest$"estimate", "p.val" = htest$"p.val") )
+}
+)
+MESpearmanCor <- data.frame(matrix(unlist(spearman.cor), nrow=length(spearman.cor), byrow=T))
+row.names(MESpearmanCor) <- names(spearman.cor)
+colnames(MESpearmanCor) <- c("rho", "p.val")
+
+labeledHeatmap(MESpearmanCor,
+               xLabels = colnames(MESpearmanCor),
+               yLabels = rownames(MESpearmanCor),
+               textMatrix = as.matrix(MESpearmanCor),
+               colors = blueWhiteRed(50),
+               colorLabels = T,
+               xLabelsAngle = 0,
+               yLabelsPosition = "left",
+               cex.lab.x = 1.4, cex.lab.y = 1.4,)
+```
+
+```{r}
+require(biomaRt)
+ensembl = useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl", mart=ensembl)
+
+kegg_lysosomal_genes <- getBM(
+  attributes= "hgnc_symbol",
+  filters="go",
+  values="GO:0005764",
+  mart=ensembl,
+  useCache = FALSE)
+
+gene_modules <- data.frame(module = dynamicColors, gene = consideredGenes)
+lysomsomal_gene_modules <- gene_modules %>%
+  filter(gene %in% kegg_lysosomal_genes$hgnc_symbol & module != "grey") %>%
+  group_by(module) %>%
+  mutate(num_genes = length(gene))
+
+write.csv(lysomsomal_gene_modules, "./data/wgcna/covid_balf/lysomsomal_gene_modules.csv", row.names = F)
+
+sort(
+  table(dynamicColors[which(consideredGenes %in% kegg_lysosomal_genes$hgnc_symbol)]),
+  decreasing = T
+)
+# sort(table(lysomsomal_gene_modules$module), decreasing = T)
+# phyper() R
+
+```
+
+
+```{r}
+colors <- c("yellow", "red", "brown", "pink", "green", "black")
+
+module_genes <- lapply(colors, function(x){
+  return(consideredGenes[which(dynamicColors==x)])
+  })
+names(module_genes) <- colors
+
+gostres <- gost(query = module_genes,
+                organism = "hsapiens", ordered_query = FALSE, 
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                measure_underrepresentation = FALSE, evcodes = FALSE, 
+                user_threshold = 0.05, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = NULL, 
+                numeric_ns = "", sources = c("KEGG", "REAC", "WP"),
+                as_short_link = FALSE)
+
+gostplot(gostres, capped = TRUE, interactive = TRUE)
+```
